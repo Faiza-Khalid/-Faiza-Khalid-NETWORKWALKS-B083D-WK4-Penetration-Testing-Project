@@ -1,0 +1,455 @@
+**NETWORKWALKS**
+
+Penetration Testing Engagement Report
+
+**Mediroza General Hospital**
+
+*Black-Box Web Application Penetration Test*
+
+| Client | Mediroza General Hospital |
+| --- | --- |
+| Target | https://medirozahospital.com |
+| Engagement Type | Black-Box Penetration Test |
+| Duration | 5 Days |
+| Project Reference | Networkwalks Batch B083 - Week 4 |
+| Prepared By | Faiza Khalid, Pentester Intern, Networkwalks B083D |
+| Classification | CONFIDENTIAL - For Client and Instructor Use Only |
+
+## Authorization and Disclaimer
+
+This engagement was conducted in a controlled, educational environment under written authorization from Mediroza General Hospital, as granted for each milestone of the Networkwalks B083 Week 4 training project. Testing was limited strictly to the target domain (medirozahospital.com); no social engineering, denial-of-service, or out-of-scope testing was performed. The techniques, payloads, and findings described in this document must never be applied to any system without explicit written permission from its owner.
+
+## Table of Contents
+
+1. Repository Structure
+
+2. Executive Summary
+
+3. Scope and Methodology
+
+4. Findings and Proof of Exploitation
+
+4.1 SQL Injection - Authentication Bypass (Critical)
+
+4.2 Sensitive Data Exposure via Directory Listing (Critical)
+
+4.3 Weak / Predictable Document Passwords (High)
+
+4.4 Information Disclosure via Document Metadata (Medium)
+
+4.5 Verbose SQL Error Messages (Low-Medium)
+
+4.6 Shared Hosting Admin Panels Discovered (Informational / Out of Scope)
+
+5. Risk Rating Summary
+
+6. Recommendations and Remediation
+
+7. Conclusion
+
+Appendix A - Evidence and Chain of Custody
+
+Appendix B - Tools Used
+
+Appendix C - Full Engagement Screenshot Log
+
+Credits
+
+## Repository Structure
+
+```
+pentest_evidence/
+├── M4_Pentest_Report_Mediroza.docx   <- FINAL DELIVERABLE: full client-ready report
+├── M4_Pentest_Report_Mediroza.md     <- this file (Markdown mirror of the report)
+├── README.md                         <- project overview / index
+├── report_images/                    <- figures embedded in the Findings section below
+├── screenshots/                      <- full sequenced engagement screenshots (Appendix C)
+│
+├── 01_milestone1_notes.md            <- M1 findings write-up (SQLi auth bypass, PDFs retrieved)
+├── 02_milestone2_findings.md         <- M2 findings write-up (encryption cracked, passwords)
+├── 03_milestone3_findings.md         <- M3 findings write-up (metadata leak, DB backup contents)
+├── Full_Engagement_Command_Log.md    <- every command run, grouped by phase, with screenshot refs
+│
+├── M1_runbook.md / M2_runbook.md / M3_runbook.md   <- step-by-step methodology/teaching guides
+│
+├── build_wordlist.py                 <- OSINT-based targeted password wordlist generator
+├── mediroza_custom.wordlist          <- generated candidate password list (537 entries)
+├── build_report.py                   <- script that generates the final .docx report
+├── docx_to_markdown.py               <- script that converts the .docx report to Markdown
+│
+├── mediroza_db_backup_2019.sql       <- exposed DB backup retrieved from /old/ (staff + shareholders)
+├── pdfs/                             <- the 3 retrieved encrypted patient lab report PDFs
+│
+└── (raw evidence: HTML responses, cookie jars, SQLi test output, login page sources)
+```
+
+## 2. Executive Summary
+
+Networkwalks conducted an authorized black-box penetration test against Mediroza General Hospital's public web application (https://medirozahospital.com) over a 5-day engagement. The objective was to assess the security posture of the hospital's patient portal and supporting infrastructure from the perspective of an unauthenticated external attacker.
+
+The engagement identified multiple critical-severity vulnerabilities that, when chained together, allowed a completely unauthenticated attacker to: bypass patient portal authentication entirely, access and download confidential patient pathology lab reports, recover the encryption passwords protecting those reports in under two seconds using publicly available tools, and - independently - retrieve a complete internal database backup exposing the salary, national ID number, and contact details of all 30 hospital staff, as well as the hospital's full shareholder ownership structure.
+
+No single vulnerability was especially sophisticated; the overall risk arises from a pattern of basic security hygiene failures - unsanitized SQL input, directory listing left enabled on production infrastructure, dictionary-crackable document passwords, and unscrubbed metadata in patient-facing documents - compounding into a severe breach of patient confidentiality and corporate data.
+
+### Key Findings at a Glance
+
+| Finding | Risk | Milestone |
+| --- | --- | --- |
+| SQL Injection - Authentication Bypass | Critical | M1 |
+| Sensitive Data Exposure via Directory Listing (DB backup) | Critical | M1 / M3 |
+| Weak / Predictable Document Passwords | High | M2 |
+| Information Disclosure via Document Metadata | Medium | M3 |
+| Verbose SQL Error Messages | Low-Medium | M1 |
+| Shared Hosting Admin Panels Discovered | Informational | M1 |
+
+**Overall Engagement Risk Rating: CRITICAL. Immediate remediation is strongly recommended before this application continues to handle real patient data.**
+
+## 3. Scope and Methodology
+
+### 3.1 Scope
+
+- Target: https://medirozahospital.com (production web application only)
+- Testing limited to the target domain - no testing of third-party infrastructure
+- No social engineering permitted
+- No denial-of-service testing permitted
+- No testing outside the agreed scope
+- Written authorization confirmed for all four project milestones
+
+### 3.2 Engagement Type
+
+Black-box: no credentials, source code, or internal documentation were provided by the client prior to testing. All access was obtained through discovered vulnerabilities.
+
+### 3.3 Methodology
+
+Testing followed a phased approach consistent with industry-standard methodologies (OWASP Testing Guide / PTES):
+
+- Reconnaissance (passive): WHOIS, DNS enumeration, robots.txt / sitemap.xml review, technology fingerprinting
+- Reconnaissance (active): directory/content discovery, manual verification of all automated findings
+- Application mapping: identifying authenticated vs. unauthenticated endpoints, form parameters, session behaviour
+- Authentication testing: baseline-then-perturb methodology to identify injectable input
+- Exploitation: confirmed SQL injection authentication bypass with full evidence capture
+- Data extraction and offline analysis: password recovery, document decryption
+- Post-exploitation analysis: metadata and file-property review of all retrieved artefacts
+- Reporting: this document
+
+### 3.4 Tools Used
+
+curl, whois, dig, whatweb, gobuster (with SecLists raft-medium-directories wordlist), Burp Suite, John the Ripper (jumbo, PDF format), Hashcat, pdf2john, qpdf, poppler-utils (pdftotext/pdfinfo), ExifTool, Python (pypdf/pikepdf) for scripted analysis.
+
+### 3.5 Limitations
+
+- Engagement was time-boxed to 5 days; testing prioritized depth on the primary patient-portal attack surface over exhaustive coverage of every endpoint
+- SQL injection testing was limited to demonstrating authentication bypass impact; further database enumeration via the injection point was not pursued beyond what was necessary to prove and document the vulnerability, in line with minimizing impact to production data
+- Shared-hosting control panel aliases (cPanel/WHM/webmail) were identified during recon but deliberately not tested - these belong to the hosting provider's infrastructure, and testing them risks affecting other tenants on shared infrastructure, which falls outside the agreed scope
+
+## 4. Findings and Proof of Exploitation
+
+Each finding below includes a technical description, the evidence captured during testing, and the business impact to Mediroza General Hospital.
+
+### 4.1 SQL Injection - Authentication Bypass
+
+**CRITICAL**
+
+*CWE-89: Improper Neutralization of Special Elements used in an SQL Command | OWASP A03:2021 - Injection*
+
+**Description:**
+
+The patient portal login endpoint (POST /patient/login.php) concatenates user-supplied input directly into a backend SQL query without sanitization or parameterization. Baseline testing established that submitting a real username ("admin") returned a distinct "Incorrect password" message versus "Username not found" for invalid usernames, confirming a two-stage lookup and the existence of an "admin" account. Injecting a single quote (') into the username field produced a raw, unhandled MySQL syntax error, confirming the input reaches the query unescaped.
+
+A comment-injection payload of username = admin'-- -  (password value irrelevant) closed the SQL string early and commented out the password comparison clause entirely, causing the database to authenticate the request purely on the existence of the 'admin' username.
+
+<img width="960" height="504" alt="M1 · Phase 4 — Authentication Bypass Payload Battery" src="https://github.com/user-attachments/assets/166296d1-6fb1-4653-90e7-12d4e33e591a" />
+
+
+*Figure 1: Authentication-bypass payload battery - admin'-- - and admin' -- return HTTP 302 (successful login), while other comment styles fail.*
+
+<img width="960" height="504" alt="M1 · Phase 5 — Exploit Confirmed, Session Captured" src="https://github.com/user-attachments/assets/e115cc72-6d7d-4223-abb9-f91e5ddbdcff" />
+
+
+*Figure 2: Winning exploit executed - valid session cookie obtained and the protected /patient/portal.php page rendered without any valid credentials.*
+
+<img width="960" height="504" alt="M1 · Phase 5 — PDFs Retrieved and Verified" src="https://github.com/user-attachments/assets/3a20a250-d62d-4a3c-a306-0688c834eb62" />
+
+
+*Figure 3: The three confidential patient lab report PDFs downloaded using the unauthorized session, with SHA-256 hashes recorded for evidence integrity.*
+
+**Impact:**
+
+A completely unauthenticated external attacker can access any and all patient records exposed through the patient portal, with no knowledge of any real username or password. This is a complete failure of the authentication control protecting confidential medical records (patient names, dates of birth, lab results) - a severe breach of patient confidentiality (e.g. POPIA / HIPAA-equivalent healthcare data protection obligations).
+
+### 4.2 Sensitive Data Exposure via Directory Listing Misconfiguration
+
+**CRITICAL**
+
+*CWE-548: Exposure of Information Through Directory Listing | CWE-200: Exposure of Sensitive Information*
+
+**Description:**
+
+The web server has directory listing (autoindex) enabled on /old/, /patient/, and /staff/ - paths that are also explicitly listed in robots.txt, which inadvertently acted as a map to sensitive content rather than hiding it. Browsing /old/ revealed and allowed direct, unauthenticated download of mediroza_db_backup_2019.sql, a full database backup.
+
+<img width="960" height="504" alt="M1 · Phase 2 — Active Recon  Directory Discovery" src="https://github.com/user-attachments/assets/ddae581d-b03c-4f80-9e6b-272adf93c7a3" />
+
+
+*Figure 4: Automated and manual directory discovery confirming /old/, /patient/, and /staff/ as real, accessible paths (noise from generic hosting-platform defaults was triaged out and excluded).*
+
+This finding was independently corroborated in Milestone 3 (see Finding 3.4): metadata embedded in one of the retrieved PDF reports explicitly referenced this exact backup file and its location, confirming the exposure is real, current, and known internally.
+
+The backup contains a complete staff table (30 employees: full name, job title, department, email, phone number, national ID number, and monthly salary) and a complete shareholders table (10 entries, cap table percentages summing to exactly 100%, confirming no partial truncation).
+
+**Impact:**
+
+Total compromise of internal HR and corporate ownership data with zero authentication required: 30 staff members' national ID numbers and salaries, and the hospital's entire shareholder/ownership structure. This is both a severe privacy breach for staff and a confidentiality breach of sensitive corporate/financial information.
+
+### 4.3 Weak / Predictable Document Passwords
+
+**HIGH**
+
+*CWE-521: Weak Password Requirements*
+
+**Description:**
+
+All three confidential patient lab report PDFs are protected using the PDF Standard Security Handler (RC4-128, revision 3). While the encryption algorithm itself is dated but not the primary weakness, the actual passwords chosen were trivially weak dictionary words: 123456, password, and !@#$%^&. All three were recovered using John the Ripper against the public rockyou.txt wordlist in under two seconds combined.
+
+<img width="960" height="504" alt="M2 — Fix Applied, Crack Succeeds, Decrypt and Read" src="https://github.com/user-attachments/assets/ef1e883b-c6ae-4dee-9f04-3291d837de5c" />
+
+
+*Figure 5: John the Ripper recovers all three document passwords from rockyou.txt; subsequent qpdf decryption and pdftotext extraction recover the full confidential lab report contents.*
+
+**Impact:**
+
+Even if the authentication bypass in Finding 3.1 were fixed, the documents themselves provide no meaningful protection for the confidential medical data they contain - any party who obtains a copy of these files by any means can trivially recover their contents.
+
+### 4.4 Information Disclosure via Document Metadata
+
+**MEDIUM**
+
+*CWE-200: Exposure of Sensitive Information to an Unauthorized Actor*
+
+**Description:**
+
+Metadata analysis (ExifTool / pdfinfo) of the decrypted report files found that report_3_decrypted.pdf (patient: Emily Thompson) contains an Author field of "j.malik" and a Comments field reading: "DB backup moved to /old before site migration, do not delete". "j.malik" corresponds to Jameel Malik, IT Systems Administrator, per the hospital's own staff records - indicating a document-generation or administrative working file leaked an internal username and a private operational note into a document issued directly to a patient.
+
+<img width="960" height="504" alt="M3 — Metadata Analysis" src="https://github.com/user-attachments/assets/2846e490-0202-4b60-8504-00b7825f87fa" />
+
+
+*Figure 6: ExifTool metadata dump across all six PDF files (encrypted and decrypted); report_3 uniquely carries the internal admin identity and confidential operational comment.*
+
+**Impact:**
+
+Confirms no metadata-sanitization step exists in the hospital's document-generation pipeline, and directly leaks the location of the sensitive data exposure documented in Finding 3.2 to anyone who inspects a patient's report file properties.
+
+### 4.5 Verbose SQL Error Messages
+
+**LOW-MEDIUM**
+
+*CWE-209: Generation of Error Message Containing Sensitive Information*
+
+**Description:**
+
+Submitting a single quote to the username parameter returns a raw, unhandled MySQL error ("Warning: mysqli_query(): You have an error in your SQL syntax...") directly to the client, rather than a generic error page.
+
+<img width="960" height="504" alt="M1 · Phase 4 — Baseline, Perturb, Compare" src="https://github.com/user-attachments/assets/dcfd9c38-4fa0-4e18-8e9c-b5c6c0e9e8f6" />
+
+
+*Figure 7: Raw MySQL syntax error returned to an unauthenticated client during baseline injection testing.*
+
+**Impact:**
+
+While not independently exploitable, this materially accelerated discovery and confirmation of Finding 3.1 by confirming the DBMS type and that input reaches the query unescaped - information that should never be exposed to an end user.
+
+### 4.6 Shared Hosting Admin Panels Discovered (Informational / Out of Scope)
+
+**INFORMATIONAL**
+
+**Description:**
+
+Directory discovery surfaced working login pages for /webmail, /cpanel, /controlpanel, and /whm, serving substantial real content (30KB+ responses) rather than generic errors. These are standard shared-hosting control-panel aliases and were deliberately not tested further: they belong to the hosting provider's shared infrastructure, and credential testing against them risks impacting other tenants hosted on the same server, which is outside the scope of this engagement.
+
+**Recommendation:**
+
+No action required from Mediroza directly; recommend raising with the hosting provider whether these aliases should be restricted by source IP or disabled if unused.
+
+## 5. Risk Rating Summary
+
+Ratings follow a Critical / High / Medium / Low scale, with an indicative CVSS v3.1-style base score for additional context. Scores are estimated based on the vulnerability characteristics observed during testing.
+
+| # | Finding | Rating | Est. CVSS | Justification |
+| --- | --- | --- | --- | --- |
+| 3.1 | SQL Injection - Authentication Bypass | Critical | 9.8 | Network-exploitable, no auth/privileges required, no user interaction, complete confidentiality/integrity impact on all patient records |
+| 3.2 | Sensitive Data Exposure via Directory Listing | Critical | 9.1 | Unauthenticated, trivial to discover and exploit; exposes complete staff PII, national IDs, salaries, and ownership structure |
+| 3.3 | Weak / Predictable Document Passwords | High | 7.5 | Confidentiality of medical records fully defeated with trivial effort once a file is obtained by any means |
+| 3.4 | Information Disclosure via Document Metadata | Medium | 5.3 | Requires inspecting file properties; leaks internal identity and a sensitive internal note, confirming/locating a separate critical exposure |
+| 3.5 | Verbose SQL Error Messages | Low-Medium | 4.3 | Not independently exploitable but materially aids discovery/confirmation of injection flaws |
+| 3.6 | Shared Hosting Admin Panels Discovered | Informational | N/A | Out of scope; standard hosting-platform defaults, not tested further |
+
+## 6. Recommendations and Remediation
+
+### 6.1 SQL Injection - Authentication Bypass
+
+**CRITICAL**
+
+- Rewrite all database queries to use parameterized queries / prepared statements (e.g. PDO with bound parameters in PHP) - never concatenate user input into SQL strings.
+- Apply least-privilege database account permissions for the web application.
+- Implement rate limiting / account lockout on the login endpoint to slow brute-force and injection probing.
+- Deploy a Web Application Firewall (WAF) as a defense-in-depth measure, not a substitute for fixing the root cause.
+- Conduct a full code review of all other input points in the application for the same pattern of unsanitized query building.
+
+### 6.2 Sensitive Data Exposure via Directory Listing
+
+**CRITICAL**
+
+- Immediately remove mediroza_db_backup_2019.sql (and audit for any other backup/legacy files) from the public web root.
+- Disable directory listing/autoindex on the web server for all directories (Apache: "Options -Indexes"; equivalent for LiteSpeed).
+- Store all database backups outside the web-accessible directory tree, encrypted at rest, with access restricted to authorized administrators only.
+- Treat this as a data breach under applicable regulations (e.g. South Africa's POPIA): assess notification obligations to affected staff and shareholders.
+- Rotate/reissue any credentials or sensitive identifiers that may have been exposed.
+
+### 6.3 Weak / Predictable Document Passwords
+
+**HIGH**
+
+- Generate cryptographically random, sufficiently long (12+ character) unique passwords per document rather than simple/predictable values.
+- Consider replacing password-protected PDF distribution with secure, authenticated in-portal viewing (with MFA) instead of emailing/issuing password-protected files.
+- If PDF passwords must be retained, upgrade from the legacy RC4-128 handler to AES-256 (PDF 2.0 encryption) where tooling supports it.
+
+### 6.4 Information Disclosure via Document Metadata
+
+**MEDIUM**
+
+- Add a metadata-sanitization step to the report-generation pipeline (strip Author/Comments/custom XMP fields) before any document is issued to a patient.
+- Ensure report-generation processes run under a dedicated service account, not individual administrator accounts, to prevent personal working notes leaking into output.
+- Audit previously issued patient documents for the same class of leakage.
+
+### 6.5 Verbose SQL Error Messages
+
+**LOW-MEDIUM**
+
+- Disable display_errors / verbose database error output in the production PHP configuration.
+- Implement centralized, generic error handling that logs full details server-side only.
+
+### 6.6 Shared Hosting Admin Panels
+
+**INFORMATIONAL**
+
+- Confirm with the hosting provider whether /webmail, /cpanel, /whm aliases are required; restrict by source IP or disable if not actively used.
+
+## 7. Conclusion
+
+This engagement demonstrates that Mediroza General Hospital's patient portal is currently exposed to complete, unauthenticated compromise of confidential patient medical records and internal corporate data. The root causes are foundational (unsanitized SQL input, server misconfiguration, weak document passwords, and unscrubbed metadata) rather than exotic, which is in some respects encouraging: each finding in this report has a well-understood, standard remediation. Networkwalks recommends the Critical findings (3.1 and 3.2) be remediated as an immediate priority, followed by the High and Medium findings, with a follow-up verification test to confirm each fix before the application returns to handling live patient data.
+
+*Report prepared by Faiza Khalid, Pentester Intern, Networkwalks B083D.*
+
+## Appendix A - Evidence and Chain of Custody
+
+SHA-256 hashes of key retrieved artefacts:
+
+| File | SHA-256 |
+| --- | --- |
+| report_1.pdf | ceb0a84ad92f811c281f5cdb6dd207686c80a1f7c17552a08282461c7df99d86 |
+| report_2.pdf | 0358b28270cc5b495df3ed5f98ed371510deaadcaa8256e6158837642d67a1b2 |
+| report_3.pdf | fb4ec0e38b5ad4647543cdb60d81224adf05b77d6ebd24cddbc2df6d510fd403 |
+| mediroza_db_backup_2019.sql | 15d8b49ae104b073d5b0a7289189bdc3940bbab96168e9bdac882ac59feed257 |
+
+Full command-by-command testing log and raw evidence files (HTML responses, cookie jars, exif dumps, cracked-hash files) are retained separately in the engagement evidence archive and are available on request for verification.
+
+## Appendix B - Tools Used
+
+- curl - manual HTTP request crafting and response analysis
+- whois / dig - domain and DNS reconnaissance
+- whatweb - technology stack fingerprinting
+- gobuster + SecLists - content/directory discovery
+- Burp Suite Community - manual request interception and replay
+- John the Ripper (Jumbo) - offline password/hash cracking (PDF format)
+- Hashcat - GPU-accelerated password cracking (prepared as contingency)
+- pdf2john.pl - PDF hash extraction for John the Ripper
+- qpdf - PDF decryption once passwords were recovered
+- poppler-utils (pdftotext, pdfinfo) - PDF content and metadata extraction
+- ExifTool - file metadata analysis
+- Python (pypdf, pikepdf) - scripted encryption analysis and automation
+
+## Appendix C - Full Engagement Screenshot Log
+
+The figures embedded in Section 4 are a curated subset. Below is the complete sequence of
+all 14 engagement screenshots, in capture order, grouped by methodology phase.
+
+### M1 · Phase 0 — Environment Setup
+<img width="960" height="504" alt="M1 · Phase 0 — Environment Setup" src="https://github.com/user-attachments/assets/e1260f8e-5372-4792-9829-03eb99f9dd8d" />
+
+*Case folders created and terminal session logging started.*
+
+### M1 · Phase 1 — Passive Recon
+<img width="960" height="504" alt="M1 · Phase 1 — Passive Recon" src="https://github.com/user-attachments/assets/d757dd0c-954e-4042-bfcd-15ba7012df62" />
+
+*WHOIS, DNS, robots.txt, sitemap.xml, and tech fingerprinting via whatweb.*
+
+### M1 · Phase 2 — Active Recon / Directory Discovery
+<img width="960" height="504" alt="M1 · Phase 2 — Active Recon  Directory Discovery" src="https://github.com/user-attachments/assets/32d66790-fabd-4165-8aa6-2005c69127fe" />
+
+*Status checks on `/patient/`, `/staff/`, `/old/` plus a full gobuster directory scan.
+Most `~username`/cgi-bin hits were triaged out as generic hosting-platform noise; `/old/`,
+`/staff/`, `/patient/` were confirmed real.*
+
+### M1 · Phase 0/1 — Clean Restart (Setup + Recon Re-run)
+<img width="960" height="504" alt="M1 · Phase 01 — Clean Restart (Setup + Recon Re-run)" src="https://github.com/user-attachments/assets/c605db87-65d9-4afe-ae1b-0e9d45cc0fd1" />
+
+
+*Tooling installed (nmap, whatweb, gobuster, seclists) and WHOIS re-confirmed as part of a
+full restart of the methodology.*
+
+<img width="960" height="504" alt="M1 · Phase 01 — Clean Restart (Setup + Recon Re-run)2" src="https://github.com/user-attachments/assets/2065c92f-37e1-4650-8ea4-dee596556d22" />
+
+*DNS MX, robots.txt, sitemap.xml, and whatweb re-run to continue the clean pass.*
+
+### M1 · Phase 3 — Mapping the Application Surface
+<img width="960" height="504" alt="M1 · Phase 3 — Mapping the Application Surface" src="https://github.com/user-attachments/assets/ee95f841-047c-4a5e-b3a7-ff7d1348049f" />
+
+*Header/behavior checks on `login.php`, `portal.php`, `download.php`, `logout.php`, and
+`staff/login.php` to identify which endpoints were session-gated.*
+
+### M1 · Phase 4 — Baseline, Perturb, Compare
+<img width="960" height="504" alt="M1 · Phase 4 — Baseline, Perturb, Compare" src="https://github.com/user-attachments/assets/cde66fa2-2c70-47a1-9aff-c993c6e8bac1" />
+
+*Form fields extracted, baseline failed login established, then single-character
+perturbation testing — a stray quote returned a raw MySQL syntax error.*
+
+### M1 · Phase 4 — Authentication Bypass Payload Battery
+<img width="960" height="504" alt="M1 · Phase 4 — Authentication Bypass Payload Battery" src="https://github.com/user-attachments/assets/e8f134d2-9f01-41c7-910e-2f7f82cf5cdd" />
+
+*Comment-based SQLi payloads tested; `admin'-- -` and `admin' -- ` returned HTTP 302
+(successful bypass).*
+
+### M1 · Phase 5 — Exploit Confirmed, Session Captured
+<img width="960" height="504" alt="M1 · Phase 5 — Exploit Confirmed, Session Captured" src="https://github.com/user-attachments/assets/e025eaa7-d9e4-4f00-a534-ec6db9656a4d" />
+
+*Winning payload executed, valid session captured, protected `portal.php` content
+rendered without credentials.*
+
+### M1 · Phase 5 — PDFs Retrieved and Verified
+<img width="960" height="504" alt="M1 · Phase 5 — PDFs Retrieved and Verified" src="https://github.com/user-attachments/assets/744568cb-7744-47aa-909f-488684ffafa4" />
+
+*All 3 confidential lab report PDFs downloaded; file type and SHA-256 hashes verified.*
+
+### M2 — Encryption Analysis, Hash Extraction, First Crack Attempt
+<img width="960" height="504" alt="M2 — Encryption Analysis, Hash Extraction, First Crack Attempt" src="https://github.com/user-attachments/assets/a6e8e51f-e451-4780-bba4-2143aba3ac3e" />
+
+*Encryption parameters checked, `pdf2john` hash extraction, first John the Ripper attempt
+failed ("No password hashes loaded" — a `pdf2john` `/P`-value signed/unsigned bug).*
+
+### M2 — Fix Applied, Crack Succeeds, Decrypt and Read
+<img width="960" height="504" alt="M2 — Fix Applied, Crack Succeeds, Decrypt and Read" src="https://github.com/user-attachments/assets/0bc78a9f-1ce3-4a1d-a8c5-e1d738553f21" />
+
+*Hash fixed, all 3 passwords cracked via rockyou.txt in ~1 second, documents decrypted
+with `qpdf`, contents read with `pdftotext`.*
+
+### M3 — Metadata Analysis
+<img width="960" height="504" alt="M3 — Metadata Analysis" src="https://github.com/user-attachments/assets/eb473eaa-195f-4355-ab97-7b7b905e8add" />
+
+*`exiftool`/`pdfinfo` dump across all 6 files — `report_3` revealed `Author: j.malik` and
+an internal comment naming the `/old/` backup location, independently confirming the
+Milestone 1 exposure.*
+
+## Credits
+
+Report prepared by **Faiza Khalid**, Pentester Intern, Networkwalks B083D, as part of the
+Networkwalks B083 Week 4 penetration testing training engagement against Mediroza General
+Hospital (authorized, educational target).
